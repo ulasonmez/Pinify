@@ -1,0 +1,104 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper function to check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Helper function to check if user is accessing their own document
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // --- Users Collection ---
+    // users/{uid}
+    match /users/{uid} {
+      // Public read for profiles (username, displayName, etc.)
+      allow read: if true;
+
+      // Create: User can create their own profile on registration
+      allow create: if isOwner(uid);
+
+      // Update: 
+      // 1. User can update their own profile
+      // 2. Other users can update 'friends' list ONLY to add/remove themselves (for Friend Requests)
+      allow update: if isOwner(uid) || 
+        (isAuthenticated() && 
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['friends']) &&
+         (
+           // Case 1: Adding self to friends list
+           (
+             request.resource.data.friends.hasAll(resource.data.friends) && 
+             request.resource.data.friends.size() == resource.data.friends.size() + 1 && 
+             request.resource.data.friends.hasAny([request.auth.uid])
+           ) ||
+           // Case 2: Removing self from friends list
+           (
+             resource.data.friends.hasAll(request.resource.data.friends) && 
+             resource.data.friends.size() == request.resource.data.friends.size() + 1 && 
+             resource.data.friends.hasAny([request.auth.uid])
+           )
+         )
+        );
+
+      // Subcollection: addedPlaces
+      // users/{uid}/addedPlaces/{placeId}
+      match /addedPlaces/{placeId} {
+        allow read: if true; // Publicly visible on profile
+        allow write: if isOwner(uid); // Only user can add/remove places from their profile
+      }
+    }
+
+    // --- Places Collection ---
+    // places/{placeId}
+    match /places/{placeId} {
+      // Public read
+      allow read: if true;
+
+      // Create: Authenticated users can add places
+      allow create: if isAuthenticated() && 
+                    request.resource.data.ownerId == request.auth.uid;
+
+      // Update:
+      // 1. Authenticated users can update avgRating and ratingCount (when reviewing)
+      // 2. Authenticated users can update 'id' (during creation flow)
+      // We restrict updates to only these fields to prevent changing name/location/owner
+      allow update: if isAuthenticated() && 
+                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['avgRating', 'ratingCount', 'id']);
+
+      // Subcollection: reviews
+      // places/{placeId}/reviews/{reviewId}
+      match /reviews/{reviewId} {
+        allow read: if true;
+        
+        // Create: Authenticated users can review
+        allow create: if isAuthenticated() && 
+                      request.resource.data.userId == request.auth.uid;
+        
+        // Update/Delete: Only the review author can edit/delete
+        allow update, delete: if isAuthenticated() && 
+                              resource.data.userId == request.auth.uid;
+      }
+    }
+
+    // --- Friend Requests Collection ---
+    // friend_requests/{requestId}
+    match /friend_requests/{requestId} {
+      // Read: Only sender or receiver can see the request
+      allow read: if isAuthenticated() && 
+                  (resource.data.senderId == request.auth.uid || resource.data.receiverId == request.auth.uid);
+      
+      // Create: Authenticated users can send requests (must be sender)
+      allow create: if isAuthenticated() && 
+                    request.resource.data.senderId == request.auth.uid;
+      
+      // Update: Only receiver can update status (accept/reject)
+      allow update: if isAuthenticated() && 
+                    resource.data.receiverId == request.auth.uid &&
+                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']);
+    }
+  }
+}
