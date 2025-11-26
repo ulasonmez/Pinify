@@ -1,4 +1,4 @@
-pinify.vercel.app
+https://pinify.vercel.app
 
 Pinify — A Social Place Bookmarking & Rating App
 
